@@ -23,8 +23,8 @@
     },
     "defaultLLM": {
       "baseURL": "https://api.siliconflow.cn/v1",
-      "apiToken": "sk-pbhwreihikiygutjtnzoiaupbttkwwucnsqlxhbqlxxxpmqs",
-      "model": "deepseek-ai/DeepSeek-V3.2"
+      "apiToken": "",
+      "model": "deepseek-ai/DeepSeek-V3.1-Terminus"
     },
-    "google": "f7b7fe0cbb4efcc37fa3fbffe040c91afd013493"
+    "google": ""
   }
