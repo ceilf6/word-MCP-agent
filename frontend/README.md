@@ -1,0 +1,1 @@
+记得去 agent/_MCP/wordMCP 中启动后端服务 ./start.sh

@@ -1,0 +1,14 @@
+[project]
+name = "wordmcp"
+version = "1.0.0"
+description = "Word document operations MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "mcp[cli]>=1.24.0",
+    "python-docx>=1.1.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+]
+

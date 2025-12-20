@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+wordmcp.egg-info/PKG-INFO
+wordmcp.egg-info/SOURCES.txt
+wordmcp.egg-info/dependency_links.txt
+wordmcp.egg-info/requires.txt
+wordmcp.egg-info/top_level.txt
