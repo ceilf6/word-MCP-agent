@@ -18,7 +18,7 @@
 - 🖼️ **图片搜索/插入** - 搜索图片并插入到文档中
 
 ### 智能 Agent
-- 使用 DeepSeek-V3 大模型理解自然语言指令
+- 支持各种大模型进行理解自然语言指令
 - 自动规划多步骤任务（如：搜索信息 → 整理内容 → 创建文档）
 - SSE 实时流式响应，展示执行过程
 
@@ -76,7 +76,7 @@ pip install -e .
 }
 ```
 
-- **LLM**: 支持任何 OpenAI 兼容的 API（推荐 SiliconFlow + DeepSeek）
+- **LLM**: 支持任何大模型
 - **Google**: [Serper.dev](https://serper.dev) API Key（用于搜索功能）
 
 ### 3. 启动后端服务
