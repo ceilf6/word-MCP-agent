@@ -37,6 +37,51 @@ interface Message {
   logType?: 'info' | 'success' | 'error' | 'working';
 }
 
+// 主题类型
+type Theme = 'dark' | 'light';
+
+// CSS 变量定义
+const themeVars = {
+  dark: {
+    '--bg-primary': '#212121',
+    '--bg-secondary': '#2f2f2f',
+    '--bg-tertiary': '#424242',
+    '--bg-input': '#424242',
+    '--border-color': '#424242',
+    '--border-input': '#525252',
+    '--text-primary': '#ffffff',
+    '--text-secondary': '#ececec',
+    '--text-muted': '#9ca3af',
+    '--text-placeholder': '#6b7280',
+    '--accent': '#10a37f',
+    '--accent-hover': '#0d8a6a',
+    '--user-bubble': '#10a37f',
+    '--assistant-bubble': '#424242',
+    '--suggestion-bg': '#424242',
+    '--suggestion-border': '#525252',
+    '--suggestion-text': '#d1d5db',
+  },
+  light: {
+    '--bg-primary': '#f7f7f8',
+    '--bg-secondary': '#ffffff',
+    '--bg-tertiary': '#f0f0f0',
+    '--bg-input': '#ffffff',
+    '--border-color': '#e5e5e5',
+    '--border-input': '#d1d5db',
+    '--text-primary': '#1a1a1a',
+    '--text-secondary': '#374151',
+    '--text-muted': '#6b7280',
+    '--text-placeholder': '#9ca3af',
+    '--accent': '#10a37f',
+    '--accent-hover': '#0d8a6a',
+    '--user-bubble': '#10a37f',
+    '--assistant-bubble': '#f0f0f0',
+    '--suggestion-bg': '#ffffff',
+    '--suggestion-border': '#e5e5e5',
+    '--suggestion-text': '#374151',
+  },
+};
+
 // 主组件
 export default function WordMCPClient() {
   const [connected, setConnected] = useState(false);
@@ -45,6 +90,22 @@ export default function WordMCPClient() {
   const [tools, setTools] = useState<Record<string, Tool>>({});
   const [messages, setMessages] = useState<Message[]>([]);
   const [userInput, setUserInput] = useState('');
+  const [theme, setTheme] = useState<Theme>(() => {
+    // 从 localStorage 读取主题，默认暗黑模式
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('theme') as Theme) || 'dark';
+    }
+    return 'dark';
+  });
+
+  // 切换主题
+  const toggleTheme = useCallback(() => {
+    setTheme(prev => {
+      const newTheme = prev === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('theme', newTheme);
+      return newTheme;
+    });
+  }, []);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -558,19 +619,30 @@ export default function WordMCPClient() {
   };
 
   return (
-    <div style={styles.container}>
+    <div style={{ ...styles.container, ...themeVars[theme] as React.CSSProperties }}>
       {/* 主内容区 */}
       <div style={styles.main}>
         {/* 头部标题 */}
         <div style={styles.header}>
           <h1 style={styles.title}>Word Agent</h1>
-          <div style={styles.status}>
-            <span style={{
-              ...styles.statusDot,
-              backgroundColor: connected ? '#10b981' : '#ef4444',
-              boxShadow: connected ? '0 0 8px #10b981' : '0 0 8px #ef4444'
-            }} />
-            <span style={styles.statusText}>{connected ? '已连接' : '未连接'}</span>
+          <div style={styles.headerRight}>
+            {/* 主题切换按钮 */}
+            <button
+              onClick={toggleTheme}
+              style={styles.themeBtn}
+              title={theme === 'dark' ? '切换到白天模式' : '切换到暗黑模式'}
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
+            {/* 连接状态 */}
+            <div style={styles.status}>
+              <span style={{
+                ...styles.statusDot,
+                backgroundColor: connected ? '#10b981' : '#ef4444',
+                boxShadow: connected ? '0 0 8px #10b981' : '0 0 8px #ef4444'
+              }} />
+              <span style={styles.statusText}>{connected ? '已连接' : '未连接'}</span>
+            </div>
           </div>
         </div>
 
@@ -665,32 +737,44 @@ export default function WordMCPClient() {
           background: transparent;
         }
         .messages-scroll::-webkit-scrollbar-thumb {
-          background: #374151;
+          background: var(--border-color);
           border-radius: 6px;
+        }
+        .messages-scroll::-webkit-scrollbar-thumb:hover {
+          background: var(--text-muted);
         }
         
         textarea:focus {
           outline: none;
         }
         
+        textarea::placeholder {
+          color: var(--text-placeholder);
+        }
+        
         button:hover:not(:disabled) {
           filter: brightness(1.1);
+        }
+
+        * {
+          transition: background-color 0.3s ease, border-color 0.3s ease, color 0.2s ease;
         }
       `}} />
     </div>
   );
 }
 
-// 样式定义
+// 样式定义 - 使用 CSS 变量实现主题切换
 const styles: Record<string, React.CSSProperties> = {
   container: {
     minHeight: '100dvh',
-    backgroundColor: '#212121',
+    backgroundColor: 'var(--bg-primary)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     padding: '24px',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    transition: 'background-color 0.3s ease, color 0.3s ease',
   },
   
   main: {
@@ -707,11 +791,31 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     padding: '0 4px',
   },
+
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+  },
+
+  themeBtn: {
+    width: '36px',
+    height: '36px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'var(--bg-tertiary)',
+    border: '1px solid var(--border-color)',
+    borderRadius: '10px',
+    cursor: 'pointer',
+    fontSize: '18px',
+    transition: 'all 0.2s ease',
+  },
   
   title: {
     fontSize: '20px',
     fontWeight: 600,
-    color: '#ffffff',
+    color: 'var(--text-primary)',
     margin: 0,
     letterSpacing: '-0.02em',
   },
@@ -730,16 +834,17 @@ const styles: Record<string, React.CSSProperties> = {
   
   statusText: {
     fontSize: '13px',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   },
   
   chatContainer: {
-    backgroundColor: '#2f2f2f',
+    backgroundColor: 'var(--bg-secondary)',
     borderRadius: '16px',
-    border: '1px solid #424242',
+    border: '1px solid var(--border-color)',
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
+    transition: 'background-color 0.3s ease, border-color 0.3s ease',
   },
   
   messagesWrapper: {
@@ -765,13 +870,13 @@ const styles: Record<string, React.CSSProperties> = {
   emptyTitle: {
     fontSize: '18px',
     fontWeight: 600,
-    color: '#ffffff',
+    color: 'var(--text-primary)',
     margin: '0 0 8px 0',
   },
   
   emptySubtitle: {
     fontSize: '14px',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     margin: '0 0 24px 0',
   },
   
@@ -785,9 +890,9 @@ const styles: Record<string, React.CSSProperties> = {
   suggestionBtn: {
     padding: '8px 16px',
     fontSize: '13px',
-    color: '#d1d5db',
-    backgroundColor: '#424242',
-    border: '1px solid #525252',
+    color: 'var(--suggestion-text)',
+    backgroundColor: 'var(--suggestion-bg)',
+    border: '1px solid var(--suggestion-border)',
     borderRadius: '20px',
     cursor: 'pointer',
     transition: 'all 0.15s',
@@ -813,14 +918,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   
   userBubble: {
-    backgroundColor: '#10a37f',
+    backgroundColor: 'var(--user-bubble)',
     color: '#ffffff',
     borderBottomRightRadius: '4px',
   },
   
   assistantBubble: {
-    backgroundColor: '#424242',
-    color: '#ececec',
+    backgroundColor: 'var(--assistant-bubble)',
+    color: 'var(--text-secondary)',
     borderBottomLeftRadius: '4px',
   },
   
@@ -850,25 +955,27 @@ const styles: Record<string, React.CSSProperties> = {
   
   inputWrapper: {
     padding: '16px',
-    borderTop: '1px solid #424242',
-    backgroundColor: '#2f2f2f',
+    borderTop: '1px solid var(--border-color)',
+    backgroundColor: 'var(--bg-secondary)',
+    transition: 'background-color 0.3s ease, border-color 0.3s ease',
   },
   
   inputContainer: {
     display: 'flex',
     alignItems: 'flex-end',
     gap: '12px',
-    backgroundColor: '#424242',
+    backgroundColor: 'var(--bg-input)',
     borderRadius: '12px',
     padding: '12px 16px',
-    border: '1px solid #525252',
+    border: '1px solid var(--border-input)',
+    transition: 'background-color 0.3s ease, border-color 0.3s ease',
   },
   
   textarea: {
     flex: 1,
     backgroundColor: 'transparent',
     border: 'none',
-    color: '#ffffff',
+    color: 'var(--text-primary)',
     fontSize: '14px',
     lineHeight: 1.5,
     resize: 'none',
@@ -882,7 +989,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#10a37f',
+    backgroundColor: 'var(--accent)',
     color: '#ffffff',
     border: 'none',
     borderRadius: '8px',
