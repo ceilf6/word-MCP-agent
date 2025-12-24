@@ -20,6 +20,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+# 导入多 Agent 协作模块
+from agents import DocumentCreationPipeline, StructurizerAgent
+
 # Initialize FastMCP server
 mcp = FastMCP("Word Document MCP Server")
 
@@ -977,6 +980,110 @@ def google_search(
         return {"success": False, "error": f"搜索请求失败: {e.response.status_code}"}
     except Exception as e:
         return {"success": False, "error": f"搜索出错: {str(e)}"}
+
+
+# ==================== Multi-Agent Tools ====================
+
+# 初始化多 Agent Pipeline
+_word_tools = {
+    "create_document": create_document,
+    "read_document": read_document,
+    "update_document": update_document,
+    "add_table": add_table,
+    "insert_image": insert_image
+}
+_document_pipeline = DocumentCreationPipeline(
+    word_tools=_word_tools,
+    pass_threshold=7,
+    max_iterations=3
+)
+
+
+@mcp.tool()
+def create_document_with_agents(
+    user_request: str,
+    auto_confirm: bool = False
+) -> dict:
+    """
+    使用多 Agent 协作创建文档。
+    
+    这是一个高级工具，使用三个 Agent 协作完成文档创建：
+    1. 结构化 Agent：解析用户请求，提取参数
+    2. 创作 Agent：生成文档内容
+    3. 评审 Agent：评估质量，不达标则重新创作
+    
+    适用场景：
+    - 用户输入较为模糊或复杂
+    - 需要高质量的文档输出
+    - 希望有自动质量把控
+    
+    Args:
+        user_request: 用户的自然语言请求，如 "帮我写一份产品介绍文档"
+        auto_confirm: 是否自动确认（True=跳过澄清问题，False=需要澄清时停止）
+    
+    Returns:
+        包含执行过程和结果的字典：
+        - success: 是否成功
+        - iterations: 创作轮数
+        - stages: 各阶段执行详情
+        - final_draft: 最终文档内容
+        - final_review: 最终评审结果
+        - needs_clarification: 是否需要澄清（如果有）
+        - questions: 需要用户回答的问题（如果有）
+    """
+    try:
+        result = _document_pipeline.run(user_request, auto_confirm=auto_confirm)
+        
+        # 如果成功且不需要澄清，自动保存文档
+        if result.get("success") and result.get("final_draft"):
+            draft = result["final_draft"]
+            save_result = create_document(
+                filename=draft["filename"],
+                title=draft["title"],
+                content=draft["content"]
+            )
+            result["save_result"] = save_result
+        
+        return result
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"多 Agent 协作出错: {str(e)}"
+        }
+
+
+@mcp.tool()
+def structurize_input(user_input: str) -> dict:
+    """
+    仅使用结构化 Agent 解析用户输入（不创建文档）。
+    
+    当你只需要理解用户意图、提取参数时使用此工具。
+    
+    Args:
+        user_input: 用户的自然语言输入
+    
+    Returns:
+        结构化结果：
+        - task: 结构化的任务数据
+        - clarification_questions: 需要澄清的问题
+    """
+    try:
+        structurizer = StructurizerAgent()
+        task, questions = structurizer.process(user_input)
+        
+        return {
+            "success": True,
+            "task": task.to_dict(),
+            "clarification_questions": questions,
+            "has_questions": len(questions) > 0
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"结构化解析出错: {str(e)}"
+        }
 
 
 # ==================== Resources ====================

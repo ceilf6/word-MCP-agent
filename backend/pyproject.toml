@@ -1,7 +1,7 @@
 [project]
 name = "wordmcp"
-version = "1.0.0"
-description = "Word document operations MCP server"
+version = "1.1.0"
+description = "Word document operations MCP server with multi-agent support"
 readme = "README.md"
 requires-python = ">=3.10"
 
@@ -10,5 +10,17 @@ dependencies = [
     "python-docx>=1.1.0",
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+# AgentScope 多智能体支持（可选）
+agents = [
+    "agentscope>=0.0.5",
+]
+
+# 完整安装（包含所有可选功能）
+full = [
+    "agentscope>=0.0.5",
 ]
 
