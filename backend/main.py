@@ -824,7 +824,7 @@ def download_image(
         file_path = images_dir / filename
         
         # 下载图片
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        with httpx.Client(timeout=30.0, follow_redirects=True, proxy=None, trust_env=False) as client:
             response = client.get(url)
             response.raise_for_status()
             
@@ -882,7 +882,7 @@ def google_image_search(
             "hl": "zh-CN"
         }
         
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=30.0, proxy=None, trust_env=False) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -944,7 +944,7 @@ def google_search(
             "gl": "cn"
         }
         
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=30.0, proxy=None, trust_env=False) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()

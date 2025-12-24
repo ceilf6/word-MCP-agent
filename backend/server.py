@@ -435,7 +435,7 @@ async def google_search_async(query: str, num_results: int = 5) -> dict:
             "gl": "cn"
         }
         
-        async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+        async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -512,7 +512,7 @@ def google_image_search(query: str, num_results: int = 5) -> dict:
             "hl": "zh-CN"
         }
         
-        with httpx.Client(timeout=30.0, proxy=None) as client:
+        with httpx.Client(timeout=30.0, proxy=None, trust_env=False) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -565,7 +565,7 @@ def download_image(url: str, filename: str = None) -> dict:
         file_path = images_dir / filename
         
         # 下载图片
-        with httpx.Client(timeout=30.0, follow_redirects=True, proxy=None) as client:
+        with httpx.Client(timeout=30.0, follow_redirects=True, proxy=None, trust_env=False) as client:
             response = client.get(url)
             response.raise_for_status()
             
@@ -681,7 +681,7 @@ async def call_llm(messages: list, tools: list = None) -> dict:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, proxy=None, trust_env=False) as client:
         response = await client.post(
             f"{base_url}/chat/completions",
             headers=headers,
