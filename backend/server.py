@@ -27,6 +27,9 @@ from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 
+# 导入多 Agent 模块
+from agents import DocumentCreationPipeline, StructurizerAgent
+
 # 默认字体设置
 DEFAULT_FONT_NAME = "宋体"
 DEFAULT_FONT_SIZE = Pt(12)
@@ -214,6 +217,28 @@ TOOLS = {
                 "width": {"type": "number", "description": "图片宽度（英寸），可选"}
             },
             "required": ["filename", "image_path"]
+        }
+    },
+    # ==================== 多 Agent 工具 ====================
+    "create_document_with_agents": {
+        "description": "【推荐】使用多 Agent 流水线创建文档。经过结构化Agent解析 → 创作Agent生成 → 评审Agent评分，不达标自动重写。创建文档时必须使用此工具！",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_request": {"type": "string", "description": "用户的原始自然语言请求，如'帮我写一份产品介绍文档'"},
+                "auto_confirm": {"type": "boolean", "description": "是否自动确认（True=跳过澄清问题，False=需要澄清时返回问题）", "default": False}
+            },
+            "required": ["user_request"]
+        }
+    },
+    "structurize_input": {
+        "description": "仅使用结构化 Agent 解析用户输入，不创建文档。用于理解用户意图和提取参数。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_input": {"type": "string", "description": "用户的自然语言输入"}
+            },
+            "required": ["user_input"]
         }
     }
 }
@@ -621,6 +646,98 @@ def insert_image(filename: str, image_path: str, width: float = None) -> dict:
         return {"success": False, "error": f"插入图片失败: {str(e)}"}
 
 
+# ==================== 多 Agent 工具实现 ====================
+
+# 初始化多 Agent Pipeline
+_word_tools_for_pipeline = {
+    "create_document": create_document,
+    "read_document": read_document,
+    "update_document": update_document,
+    "add_table": add_table,
+    "insert_image": insert_image
+}
+_document_pipeline = DocumentCreationPipeline(
+    word_tools=_word_tools_for_pipeline,
+    pass_threshold=7,
+    max_iterations=3
+)
+
+
+def create_document_with_agents(user_request: str, auto_confirm: bool = False) -> dict:
+    """
+    使用多 Agent 协作创建文档
+    
+    流程：
+    1. 结构化 Agent：解析用户请求，提取参数
+    2. 创作 Agent：生成文档内容
+    3. 评审 Agent：评估质量，不达标则重新创作（最多3轮）
+    """
+    try:
+        logger.info(f"[多Agent] 开始处理请求: {user_request[:100]}...")
+        
+        result = _document_pipeline.run(user_request, auto_confirm=auto_confirm)
+        
+        # 如果成功且不需要澄清，自动保存文档
+        if result.get("success") and result.get("final_draft"):
+            draft = result["final_draft"]
+            logger.info(f"[多Agent] 创作成功，评分: {result.get('final_review', {}).get('score', 'N/A')}/10")
+            
+            save_result = create_document(
+                filename=draft["filename"],
+                title=draft["title"],
+                content=draft["content"]
+            )
+            result["save_result"] = save_result
+            
+            if save_result.get("success"):
+                logger.info(f"[多Agent] 文档已保存: {draft['filename']}")
+        
+        # 添加 Agent 流程说明
+        result["agent_info"] = {
+            "pipeline": "结构化Agent → 创作Agent → 评审Agent",
+            "pass_threshold": 7,
+            "max_iterations": 3
+        }
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[多Agent] 出错: {str(e)}")
+        return {
+            "success": False,
+            "error": f"多 Agent 协作出错: {str(e)}"
+        }
+
+
+def structurize_input(user_input: str) -> dict:
+    """
+    仅使用结构化 Agent 解析用户输入（不创建文档）
+    """
+    try:
+        logger.info(f"[结构化Agent] 解析输入: {user_input[:100]}...")
+        
+        structurizer = StructurizerAgent()
+        task, questions = structurizer.process(user_input)
+        
+        result = {
+            "success": True,
+            "task": task.to_dict(),
+            "clarification_questions": questions,
+            "has_questions": len(questions) > 0
+        }
+        
+        logger.info(f"[结构化Agent] 识别意图: {task.intent}, 问题数: {len(questions)}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[结构化Agent] 出错: {str(e)}")
+        return {
+            "success": False,
+            "error": f"结构化解析出错: {str(e)}"
+        }
+
+
 # 工具映射
 TOOL_HANDLERS = {
     "create_document": create_document,
@@ -634,6 +751,9 @@ TOOL_HANDLERS = {
     "google_image_search": google_image_search,
     "download_image": download_image,
     "insert_image": insert_image,
+    # 多 Agent 工具
+    "create_document_with_agents": create_document_with_agents,
+    "structurize_input": structurize_input,
 }
 
 
@@ -885,42 +1005,69 @@ async def sse_agent(request: AgentRequest, http_request: Request):
         title = (request.title or "").strip()
         filename_hint = (request.filename or "").strip()
         
-        # 构建系统提示
-        system_prompt = """你是一个智能文档助手。你必须通过调用工具来完成用户的请求。
+        # 构建系统提示 - 强制使用多 Agent 流水线
+        system_prompt = """你是一个智能文档助手，使用多 Agent 流水线来创建高质量文档。
 
-【重要规则】
-1. 必须直接调用工具，不要描述步骤或解释如何操作
-2. 用户让你创建文档，你就调用 create_document 工具
-3. 用户让你读取文档，你就调用 read_document 工具
-4. 用户让你列出文档，你就调用 list_documents 工具
-5. 如果需要查询信息来写文档，先调用 google_search 搜索，再根据搜索结果创建文档
-6. 如果需要插入图片，按顺序：google_image_search → download_image → insert_image
-7. 不要输出 HTML、代码块或步骤说明，直接调用工具
+## 核心原则：使用多 Agent 流水线
 
-【工具说明】
-文档操作：
-- create_document(filename, title, content): 创建新文档
-- read_document(filename): 读取文档内容
-- update_document(filename, action, content): 更新文档
-- delete_document(filename): 删除文档
-- list_documents(): 列出所有文档
-- add_table(filename, table_data, title): 添加表格
-- search_replace(filename, search_text, replace_text): 搜索替换
+所有文档创建任务必须经过 **三阶段 Agent 流水线**：
+1. **结构化 Agent** - 解析用户输入，提取参数，识别缺失信息
+2. **创作 Agent** - 根据结构化数据生成文档内容  
+3. **评审 Agent** - 评估文档质量（1-10分），不达标则重新创作
+
+## 工具选择规则（必须遵守）
+
+| 任务类型 | 必须使用的工具 |
+|----------|----------------|
+| 创建新文档 | `create_document_with_agents` ⚠️ 必须使用！ |
+| 仅解析用户输入 | `structurize_input` |
+| 简单修改已有文档 | `update_document` |
+| 读取文档 | `read_document` |
+| 删除文档 | `delete_document` |
+| 列出文档 | `list_documents` |
+
+## ⚠️ 禁止行为
+❌ **禁止直接使用 `create_document`**，必须用 `create_document_with_agents`
+❌ 不要假设文件名、标题、内容
+❌ 不要跳过多 Agent 流程
+
+## 多 Agent 工具使用方法
+
+```python
+# 创建文档（必须使用）
+create_document_with_agents(
+    user_request="用户的原始请求文本",
+    auto_confirm=False  # False=需要澄清时会返回问题
+)
+```
+
+返回值说明：
+- `needs_clarification=True`: 需要向用户提问，`questions` 包含问题列表
+- `success=True`: 文档创建成功，包含评分和最终内容
+- `iterations`: 经过几轮创作-评审循环
+
+## 其他工具
 
 搜索功能：
 - google_search(query, num_results): 搜索文字信息
-- google_image_search(query, num_results): 搜索图片，返回图片URL列表
+- google_image_search(query, num_results): 搜索图片
 
-图片操作：
-- download_image(url, filename): 从URL下载图片到本地，返回本地路径
-- insert_image(filename, image_path, width): 将本地图片插入文档
+图片操作（按顺序使用）：
+1. google_image_search → 获取图片URL
+2. download_image → 下载到本地
+3. insert_image → 插入文档
 
-【图片插入流程示例】
-1. google_image_search(query="可爱猫咪") → 获取图片URL
-2. download_image(url="图片URL") → 下载到本地，获取 local_path
-3. insert_image(filename="文档名", image_path="local_path") → 插入文档
+## 工作流程
 
-现在，请直接调用工具来完成用户的请求。"""
+```
+用户请求 → create_document_with_agents(user_request)
+         ↓
+    [返回 needs_clarification?]
+         ├─ True → 向用户展示 questions，等待回答
+         └─ False → 展示结果（评分、内容、迭代次数）
+```
+
+现在，请使用正确的工具来完成用户的请求。记住：创建文档必须用 `create_document_with_agents`！"""
 
         # 初始化消息历史
         messages = [
@@ -1047,7 +1194,16 @@ async def chat(request: AgentRequest):
     title = (request.title or "").strip()
     filename_hint = (request.filename or "").strip()
     
-    system_prompt = """你是一个专业的 Word 文档助手。请根据用户的请求，决定需要调用哪些工具并执行。"""
+    system_prompt = """你是一个专业的 Word 文档助手，使用多 Agent 流水线创建文档。
+
+⚠️ 重要：创建文档必须使用 `create_document_with_agents`，禁止直接用 `create_document`！
+
+多 Agent 流程会自动：
+1. 结构化解析用户输入
+2. 创作文档内容
+3. 评审质量（评分<7自动重写）
+
+使用方法：create_document_with_agents(user_request="用户请求", auto_confirm=False)"""
     
     messages = [
         {"role": "system", "content": system_prompt},
