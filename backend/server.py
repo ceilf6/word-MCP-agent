@@ -30,6 +30,9 @@ from docx.oxml.ns import qn
 # 导入多 Agent 模块
 from agents import DocumentCreationPipeline, StructurizerAgent
 
+# 导入记忆系统
+from memory import MemoryManager, get_session, remember, recall
+
 # 默认字体设置
 DEFAULT_FONT_NAME = "宋体"
 DEFAULT_FONT_SIZE = Pt(12)
@@ -239,6 +242,40 @@ TOOLS = {
                 "user_input": {"type": "string", "description": "用户的自然语言输入"}
             },
             "required": ["user_input"]
+        }
+    },
+    # ==================== 记忆工具 ====================
+    "save_to_memory": {
+        "description": "保存重要信息到长期记忆。用于记住用户偏好、重要事实等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "要记忆的内容"},
+                "category": {"type": "string", "enum": ["fact", "preference", "context"], "description": "分类：fact=事实，preference=偏好，context=上下文"},
+                "importance": {"type": "number", "description": "重要性 0-1，默认0.5"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表"}
+            },
+            "required": ["content"]
+        }
+    },
+    "recall_memory": {
+        "description": "从长期记忆中检索相关信息。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索关键词"},
+                "category": {"type": "string", "enum": ["fact", "preference", "context"], "description": "限定分类"},
+                "limit": {"type": "integer", "description": "返回数量，默认5"}
+            },
+            "required": ["query"]
+        }
+    },
+    "get_memory_stats": {
+        "description": "获取当前会话的记忆统计信息。",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
         }
     }
 }
@@ -738,6 +775,99 @@ def structurize_input(user_input: str) -> dict:
         }
 
 
+# ==================== 记忆工具实现 ====================
+
+def save_to_memory(content: str, category: str = "fact", importance: float = 0.5, tags: List[str] = None, session_id: str = "default") -> dict:
+    """
+    保存信息到长期记忆
+    """
+    try:
+        session = get_session(session_id)
+        memory_id = session.remember(
+            content=content,
+            category=category,
+            importance=importance,
+            tags=tags or []
+        )
+        
+        logger.info(f"[记忆] 保存到长期记忆: {content[:50]}... (ID: {memory_id})")
+        
+        return {
+            "success": True,
+            "message": "已保存到长期记忆",
+            "memory_id": memory_id,
+            "content": content[:100],
+            "category": category,
+            "importance": importance
+        }
+    except Exception as e:
+        logger.error(f"[记忆] 保存失败: {str(e)}")
+        return {
+            "success": False,
+            "error": f"保存记忆失败: {str(e)}"
+        }
+
+
+def recall_memory(query: str, category: str = None, limit: int = 5, session_id: str = "default") -> dict:
+    """
+    从长期记忆中检索信息
+    """
+    try:
+        session = get_session(session_id)
+        results = session.long_term.search(query, category=category, limit=limit)
+        
+        memories = []
+        for item in results:
+            memories.append({
+                "id": item.id,
+                "content": item.content,
+                "category": item.category,
+                "importance": item.importance,
+                "tags": item.tags,
+                "access_count": item.access_count
+            })
+        
+        logger.info(f"[记忆] 检索 '{query}' 找到 {len(memories)} 条记忆")
+        
+        return {
+            "success": True,
+            "query": query,
+            "count": len(memories),
+            "memories": memories
+        }
+    except Exception as e:
+        logger.error(f"[记忆] 检索失败: {str(e)}")
+        return {
+            "success": False,
+            "error": f"检索记忆失败: {str(e)}"
+        }
+
+
+def get_memory_stats(session_id: str = "default") -> dict:
+    """
+    获取记忆统计信息
+    """
+    try:
+        session = get_session(session_id)
+        stats = session.get_stats()
+        
+        # 添加长期记忆详情
+        long_term_summary = session.long_term.get_summary()
+        
+        return {
+            "success": True,
+            "session_stats": stats,
+            "long_term_summary": long_term_summary,
+            "working_memory": session.working.get_summary()
+        }
+    except Exception as e:
+        logger.error(f"[记忆] 获取统计失败: {str(e)}")
+        return {
+            "success": False,
+            "error": f"获取记忆统计失败: {str(e)}"
+        }
+
+
 # 工具映射
 TOOL_HANDLERS = {
     "create_document": create_document,
@@ -754,6 +884,10 @@ TOOL_HANDLERS = {
     # 多 Agent 工具
     "create_document_with_agents": create_document_with_agents,
     "structurize_input": structurize_input,
+    # 记忆工具
+    "save_to_memory": save_to_memory,
+    "recall_memory": recall_memory,
+    "get_memory_stats": get_memory_stats,
 }
 
 
@@ -875,6 +1009,7 @@ class AgentRequest(BaseModel):
     query: str
     title: Optional[str] = None
     filename: Optional[str] = None
+    session_id: Optional[str] = "default"  # 会话 ID，用于记忆隔离
 
 
 def _sanitize_filename(name: str) -> str:
@@ -991,22 +1126,29 @@ async def sse_call_tool(request: ToolCallRequest):
 @app.post("/sse/agent")
 async def sse_agent(request: AgentRequest, http_request: Request):
     """
-    LLM Agent SSE 端点
+    LLM Agent SSE 端点（带记忆功能）
     
     1. 接收用户的自然语言查询
-    2. 调用 LLM 理解意图并决定调用哪些工具
-    3. 执行工具调用
-    4. 将结果返回给 LLM 继续处理
-    5. 循环直到 LLM 给出最终答案
+    2. 从记忆系统加载历史上下文
+    3. 调用 LLM 理解意图并决定调用哪些工具
+    4. 执行工具调用
+    5. 将结果返回给 LLM 继续处理
+    6. 循环直到 LLM 给出最终答案
+    7. 保存对话到记忆系统
     """
 
     async def stream_response():
         query = request.query
         title = (request.title or "").strip()
         filename_hint = (request.filename or "").strip()
+        session_id = request.session_id or "default"
+        
+        # 获取或创建会话
+        session = get_session(session_id)
+        logger.info(f"[记忆] 使用会话: {session_id}, 历史消息数: {len(session.short_term)}")
         
         # 构建系统提示 - 强制使用多 Agent 流水线
-        system_prompt = """你是一个智能文档助手，使用多 Agent 流水线来创建高质量文档。
+        system_prompt = """你是一个智能文档助手，使用多 Agent 流水线来创建高质量文档。你具有记忆能力，可以记住之前的对话内容。
 
 ## 核心原则：使用多 Agent 流水线
 
@@ -1025,11 +1167,20 @@ async def sse_agent(request: AgentRequest, http_request: Request):
 | 读取文档 | `read_document` |
 | 删除文档 | `delete_document` |
 | 列出文档 | `list_documents` |
+| 保存到长期记忆 | `save_to_memory` |
+| 从长期记忆检索 | `recall_memory` |
 
 ## ⚠️ 禁止行为
 ❌ **禁止直接使用 `create_document`**，必须用 `create_document_with_agents`
 ❌ 不要假设文件名、标题、内容
 ❌ 不要跳过多 Agent 流程
+
+## 记忆功能
+
+你可以：
+- 记住用户之前提到的偏好和需求
+- 参考之前创建的文档
+- 保存重要信息到长期记忆
 
 ## 多 Agent 工具使用方法
 
@@ -1057,23 +1208,17 @@ create_document_with_agents(
 2. download_image → 下载到本地
 3. insert_image → 插入文档
 
-## 工作流程
-
-```
-用户请求 → create_document_with_agents(user_request)
-         ↓
-    [返回 needs_clarification?]
-         ├─ True → 向用户展示 questions，等待回答
-         └─ False → 展示结果（评分、内容、迭代次数）
-```
-
 现在，请使用正确的工具来完成用户的请求。记住：创建文档必须用 `create_document_with_agents`！"""
 
-        # 初始化消息历史
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"用户请求: {query}" + (f"\n建议标题: {title}" if title else "") + (f"\n建议文件名: {filename_hint}" if filename_hint else "")}
-        ]
+        # 设置系统提示词到会话
+        session.short_term.set_system_prompt(system_prompt)
+        
+        # 添加用户消息到记忆
+        user_message = f"用户请求: {query}" + (f"\n建议标题: {title}" if title else "") + (f"\n建议文件名: {filename_hint}" if filename_hint else "")
+        session.add_message("user", user_message)
+        
+        # 从会话获取完整上下文（包含历史记忆）
+        messages = session.get_context_for_llm()
         
         tools = get_tools_for_llm()
         
@@ -1154,6 +1299,10 @@ create_document_with_agents(
                     if content:
                         # 移除 <think>...</think> 标签内容
                         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+                    
+                    # 保存助手回复到记忆
+                    session.add_message("assistant", content)
+                    logger.info(f"[记忆] 保存助手回复到会话 {session_id}")
                     
                     yield f"data: {json.dumps({'type': 'response', 'content': content}, ensure_ascii=False)}\n\n"
                     break
@@ -1258,6 +1407,108 @@ async def chat(request: AgentRequest):
     return {"success": False, "error": "达到最大迭代次数"}
 
 
+# ==================== 记忆管理 API ====================
+
+@app.get("/memory/sessions")
+async def list_sessions():
+    """列出所有会话"""
+    memory_mgr = MemoryManager()
+    return {
+        "success": True,
+        "sessions": memory_mgr.list_sessions()
+    }
+
+
+@app.get("/memory/session/{session_id}")
+async def get_session_info(session_id: str):
+    """获取会话信息"""
+    session = get_session(session_id)
+    return {
+        "success": True,
+        "stats": session.get_stats(),
+        "recent_messages": [msg.to_dict() for msg in session.short_term.get_recent(10)],
+        "long_term_summary": session.long_term.get_summary()
+    }
+
+
+@app.delete("/memory/session/{session_id}")
+async def delete_session(session_id: str):
+    """删除会话"""
+    memory_mgr = MemoryManager()
+    if memory_mgr.delete_session(session_id):
+        return {"success": True, "message": f"会话 {session_id} 已删除"}
+    return {"success": False, "error": "会话不存在"}
+
+
+@app.post("/memory/session/{session_id}/clear")
+async def clear_session(session_id: str):
+    """清空会话的短期记忆（保留长期记忆）"""
+    session = get_session(session_id)
+    session.short_term.clear()
+    session.working.clear()
+    return {"success": True, "message": f"会话 {session_id} 的短期记忆已清空"}
+
+
+@app.get("/memory/session/{session_id}/history")
+async def get_session_history(session_id: str, limit: int = 20):
+    """获取会话对话历史"""
+    session = get_session(session_id)
+    messages = session.short_term.get_recent(limit)
+    return {
+        "success": True,
+        "session_id": session_id,
+        "count": len(messages),
+        "messages": [msg.to_dict() for msg in messages]
+    }
+
+
+class MemoryAddRequest(BaseModel):
+    """添加记忆请求"""
+    content: str
+    category: str = "fact"
+    importance: float = 0.5
+    tags: List[str] = []
+
+
+@app.post("/memory/session/{session_id}/remember")
+async def add_memory(session_id: str, request: MemoryAddRequest):
+    """手动添加长期记忆"""
+    session = get_session(session_id)
+    memory_id = session.remember(
+        content=request.content,
+        category=request.category,
+        importance=request.importance,
+        tags=request.tags
+    )
+    return {
+        "success": True,
+        "memory_id": memory_id,
+        "message": "记忆已添加"
+    }
+
+
+@app.get("/memory/session/{session_id}/recall")
+async def search_memory(session_id: str, query: str, limit: int = 5):
+    """搜索长期记忆"""
+    session = get_session(session_id)
+    results = session.recall(query, limit=limit)
+    return {
+        "success": True,
+        "query": query,
+        "count": len(results),
+        "memories": [
+            {
+                "id": item.id,
+                "content": item.content,
+                "category": item.category,
+                "importance": item.importance,
+                "tags": item.tags
+            }
+            for item in results
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -1274,9 +1525,17 @@ if __name__ == "__main__":
     print("  POST /call       - 直接调用工具")
     print("  GET  /sse        - SSE 连接")
     print("  POST /sse/call   - SSE 调用工具")
-    print("  POST /sse/agent  - LLM Agent (SSE 流式)")
+    print("  POST /sse/agent  - LLM Agent (SSE 流式, 带记忆)")
     print("  POST /chat       - LLM Agent (非流式)")
     print("  GET  /documents  - 文档列表")
+    print("\n记忆管理端点:")
+    print("  GET  /memory/sessions              - 列出所有会话")
+    print("  GET  /memory/session/{id}          - 获取会话信息")
+    print("  DELETE /memory/session/{id}        - 删除会话")
+    print("  POST /memory/session/{id}/clear    - 清空短期记忆")
+    print("  GET  /memory/session/{id}/history  - 获取对话历史")
+    print("  POST /memory/session/{id}/remember - 添加长期记忆")
+    print("  GET  /memory/session/{id}/recall   - 搜索长期记忆")
     print("=" * 50)
     
     uvicorn.run(app, host="0.0.0.0", port=8080)
