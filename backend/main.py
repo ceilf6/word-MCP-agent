@@ -15,9 +15,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import os
 import json
 import httpx
+import re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 # Initialize FastMCP server
 mcp = FastMCP("Word Document MCP Server")
@@ -42,6 +43,160 @@ GOOGLE_API_KEY = CONFIG.get("google", "")
 
 # ==================== Helper Functions ====================
 
+# 工具信息映射，用于任务规划
+TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "create_document": {
+        "description": "创建新文档",
+        "keywords": ["创建", "新建", "生成", "写", "create", "new"],
+        "params": ["filename", "title", "content"],
+        "required": []
+    },
+    "read_document": {
+        "description": "读取文档内容",
+        "keywords": ["读取", "查看", "打开", "获取", "read", "open", "get"],
+        "params": ["filename"],
+        "required": ["filename"]
+    },
+    "update_document": {
+        "description": "更新文档（追加、插入、替换内容）",
+        "keywords": ["更新", "修改", "追加", "添加内容", "update", "append", "modify"],
+        "params": ["filename", "action", "content", "paragraph_index"],
+        "required": ["filename", "action"]
+    },
+    "delete_document": {
+        "description": "删除文档",
+        "keywords": ["删除", "移除", "delete", "remove"],
+        "params": ["filename"],
+        "required": ["filename"]
+    },
+    "list_documents": {
+        "description": "列出所有文档",
+        "keywords": ["列出", "显示", "所有文档", "list", "show all"],
+        "params": [],
+        "required": []
+    },
+    "add_table": {
+        "description": "添加表格",
+        "keywords": ["表格", "table", "添加表", "插入表"],
+        "params": ["filename", "table_data", "title"],
+        "required": ["filename", "table_data"]
+    },
+    "insert_image": {
+        "description": "插入图片",
+        "keywords": ["图片", "插入图", "添加图", "image", "picture", "photo"],
+        "params": ["filename", "image_path", "width"],
+        "required": ["filename", "image_path"]
+    },
+    "format_text": {
+        "description": "格式化文本（加粗、斜体、字号）",
+        "keywords": ["格式", "加粗", "斜体", "字体", "format", "bold", "italic"],
+        "params": ["filename", "paragraph_index", "bold", "italic", "font_size"],
+        "required": ["filename", "paragraph_index"]
+    },
+    "search_replace": {
+        "description": "搜索替换文本",
+        "keywords": ["替换", "搜索", "查找", "replace", "search", "find"],
+        "params": ["filename", "search_text", "replace_text"],
+        "required": ["filename", "search_text", "replace_text"]
+    },
+    "download_image": {
+        "description": "从URL下载图片",
+        "keywords": ["下载图片", "下载图", "download image"],
+        "params": ["url", "filename"],
+        "required": ["url"]
+    },
+    "google_search": {
+        "description": "Google搜索获取信息",
+        "keywords": ["搜索", "查询", "search", "google", "查资料"],
+        "params": ["query", "num_results"],
+        "required": ["query"]
+    },
+    "google_image_search": {
+        "description": "Google图片搜索",
+        "keywords": ["搜图", "搜索图片", "找图", "image search"],
+        "params": ["query", "num_results"],
+        "required": ["query"]
+    }
+}
+
+
+def extract_filename(text: str) -> Optional[str]:
+    """从文本中提取文件名"""
+    # 匹配 .docx 文件名
+    match = re.search(r'[\w\u4e00-\u9fff_-]+\.docx', text, re.IGNORECASE)
+    if match:
+        return match.group()
+    
+    # 匹配引号中的文件名
+    match = re.search(r'["\']([^"\']+)["\']', text)
+    if match:
+        return match.group(1)
+    
+    # 匹配"文档X"、"文件X"模式
+    match = re.search(r'(?:文档|文件|document)\s*[：:]*\s*([\w\u4e00-\u9fff_-]+)', text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    
+    return None
+
+
+def extract_title(text: str) -> Optional[str]:
+    """从文本中提取标题"""
+    patterns = [
+        r'标题[：:为是]\s*["\']?([^"\'，。\n]+)["\']?',
+        r'题目[：:为是]\s*["\']?([^"\'，。\n]+)["\']?',
+        r'title[：:]\s*["\']?([^"\'，。\n]+)["\']?',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def extract_content(text: str) -> Optional[str]:
+    """从文本中提取内容"""
+    patterns = [
+        r'内容[：:为是]\s*["\']?(.+?)["\']?(?:[，。]|$)',
+        r'content[：:]\s*["\']?(.+?)["\']?(?:[，。]|$)',
+        r'写[：:]\s*["\']?(.+?)["\']?(?:[，。]|$)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def match_intent(text: str) -> List[Dict[str, Any]]:
+    """匹配用户意图，返回可能的工具列表（按匹配度排序）"""
+    text_lower = text.lower()
+    scores = []
+    
+    for tool_name, info in TOOL_REGISTRY.items():
+        score = 0
+        matched_keywords = []
+        
+        for keyword in info["keywords"]:
+            if keyword in text_lower:
+                score += len(keyword)  # 关键词越长，匹配越精确
+                matched_keywords.append(keyword)
+        
+        if score > 0:
+            scores.append({
+                "tool": tool_name,
+                "score": score,
+                "matched_keywords": matched_keywords,
+                "description": info["description"],
+                "required_params": info["required"],
+                "all_params": info["params"]
+            })
+    
+    # 按分数降序排序
+    scores.sort(key=lambda x: x["score"], reverse=True)
+    return scores
+
+
 def get_file_path(filename: str) -> Path:
     """Get full path for a file in word directory."""
     path = Path(filename)
@@ -53,6 +208,189 @@ def get_file_path(filename: str) -> Path:
 
 
 # ==================== Tools ====================
+
+@mcp.tool()
+def plan_task(user_input: str) -> dict:
+    """
+    智能任务规划工具：解析用户的非结构化输入，识别意图并生成结构化执行计划。
+    
+    当用户输入模糊或复杂的自然语言描述时，先调用此工具进行解析，
+    然后根据返回的执行计划依次调用对应的工具。
+    
+    Args:
+        user_input: 用户的自然语言输入，如 "创建一个标题为年度报告的文档，包含销售数据表格"
+    
+    Returns:
+        结构化的执行计划，包含:
+        - success: 是否成功解析
+        - intent_summary: 意图摘要
+        - steps: 执行步骤列表，每步包含 tool_name, params, description
+        - extracted_info: 从输入中提取的信息
+        - confidence: 置信度 (high/medium/low)
+        - suggestions: 如果信息不完整，给出建议
+    """
+    try:
+        # 1. 匹配意图
+        matched_intents = match_intent(user_input)
+        
+        if not matched_intents:
+            return {
+                "success": False,
+                "error": "无法识别用户意图",
+                "suggestions": [
+                    "请明确说明您想要的操作，例如：",
+                    "- 创建文档：'创建一个名为xxx的文档'",
+                    "- 读取文档：'打开/读取xxx文档'",
+                    "- 添加表格：'在文档中添加表格'",
+                    "- 插入图片：'在文档中插入图片'",
+                    "- 搜索信息：'搜索关于xxx的信息'"
+                ],
+                "available_tools": list(TOOL_REGISTRY.keys())
+            }
+        
+        # 2. 提取参数
+        extracted = {
+            "filename": extract_filename(user_input),
+            "title": extract_title(user_input),
+            "content": extract_content(user_input)
+        }
+        
+        # 3. 生成执行计划
+        steps = []
+        primary_intent = matched_intents[0]
+        
+        # 检查是否是复合任务（多个意图）
+        is_complex = len(matched_intents) > 1 and matched_intents[1]["score"] > 2
+        
+        # 生成主要步骤
+        step1_params = {}
+        missing_params = []
+        
+        for param in primary_intent["required_params"]:
+            if param == "filename" and extracted["filename"]:
+                step1_params["filename"] = extracted["filename"]
+            elif param == "title" and extracted["title"]:
+                step1_params["title"] = extracted["title"]
+            elif param == "content" and extracted["content"]:
+                step1_params["content"] = extracted["content"]
+            elif param == "query":
+                # 对于搜索，使用整个输入作为查询（去掉动词）
+                query = re.sub(r'^(搜索|查询|查找|找|search)\s*', '', user_input, flags=re.IGNORECASE)
+                step1_params["query"] = query.strip() or user_input
+            else:
+                missing_params.append(param)
+        
+        # 添加可选参数
+        for param in primary_intent["all_params"]:
+            if param not in step1_params:
+                if param == "title" and extracted["title"]:
+                    step1_params["title"] = extracted["title"]
+                elif param == "content" and extracted["content"]:
+                    step1_params["content"] = extracted["content"]
+        
+        steps.append({
+            "step": 1,
+            "tool_name": primary_intent["tool"],
+            "description": primary_intent["description"],
+            "params": step1_params,
+            "missing_params": missing_params
+        })
+        
+        # 如果是复合任务，添加后续步骤
+        if is_complex:
+            for i, intent in enumerate(matched_intents[1:3], start=2):  # 最多3个步骤
+                if intent["score"] > 2:
+                    step_params = {}
+                    if "filename" in intent["all_params"] and extracted["filename"]:
+                        step_params["filename"] = extracted["filename"]
+                    elif "filename" in intent["all_params"] and steps[0]["params"].get("filename"):
+                        step_params["filename"] = steps[0]["params"]["filename"]
+                    
+                    steps.append({
+                        "step": i,
+                        "tool_name": intent["tool"],
+                        "description": intent["description"],
+                        "params": step_params,
+                        "missing_params": [p for p in intent["required_params"] if p not in step_params]
+                    })
+        
+        # 4. 计算置信度
+        has_all_required = len(missing_params) == 0
+        confidence = "high" if has_all_required and primary_intent["score"] > 3 else \
+                    "medium" if primary_intent["score"] > 2 else "low"
+        
+        # 5. 生成建议
+        suggestions = []
+        if missing_params:
+            suggestions.append(f"缺少必要参数: {', '.join(missing_params)}")
+            if "filename" in missing_params:
+                suggestions.append("请提供文档名称，例如：'报告.docx' 或 '我的文档'")
+            if "table_data" in missing_params:
+                suggestions.append("请提供表格数据，格式为二维数组")
+            if "image_path" in missing_params:
+                suggestions.append("请提供图片路径，或先使用 download_image 下载图片")
+        
+        return {
+            "success": True,
+            "intent_summary": f"识别到主要意图: {primary_intent['description']}",
+            "matched_keywords": primary_intent["matched_keywords"],
+            "confidence": confidence,
+            "is_complex_task": is_complex,
+            "steps": steps,
+            "extracted_info": {k: v for k, v in extracted.items() if v},
+            "suggestions": suggestions if suggestions else ["参数完整，可以直接执行"],
+            "raw_matches": matched_intents[:3]  # 返回前3个匹配结果供参考
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"解析出错: {str(e)}"
+        }
+
+
+@mcp.tool()
+def get_tool_info(tool_name: Optional[str] = None) -> dict:
+    """
+    获取工具信息。不带参数返回所有工具列表，带参数返回特定工具的详细信息。
+    
+    Args:
+        tool_name: 工具名称（可选）
+    
+    Returns:
+        工具信息
+    """
+    if tool_name:
+        if tool_name in TOOL_REGISTRY:
+            info = TOOL_REGISTRY[tool_name]
+            return {
+                "success": True,
+                "tool_name": tool_name,
+                "description": info["description"],
+                "parameters": info["params"],
+                "required_parameters": info["required"],
+                "trigger_keywords": info["keywords"]
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"未知工具: {tool_name}",
+                "available_tools": list(TOOL_REGISTRY.keys())
+            }
+    else:
+        tools_summary = []
+        for name, info in TOOL_REGISTRY.items():
+            tools_summary.append({
+                "name": name,
+                "description": info["description"],
+                "required_params": info["required"]
+            })
+        return {
+            "success": True,
+            "tools_count": len(tools_summary),
+            "tools": tools_summary
+        }
+
 
 @mcp.tool()
 def create_document(
